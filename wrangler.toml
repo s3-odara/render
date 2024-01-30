@@ -1,7 +1,7 @@
 name = "render"
 main = "src/index.ts"
 compatibility_date = "2022-05-15"
-# Set this to false if you don't want to use the default *.workers.dev route.
+# Set this to false if you don't want to use the default *.workers.dev route. yay
 # Note that *.workers.dev routes don't support native worker-level caching: https://developers.cloudflare.com/workers/runtime-apis/cache/
 workers_dev = false
 

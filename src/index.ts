@@ -118,12 +118,12 @@ async function makeListingResponse(
 <html>
   <head>
     <title>Index of ${path}</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="initial-scale=1.0">
     <meta charset="utf-8">
     <style>
-      td { padding-right: 16px; text-align: right; font-family: monospace }
-      td:nth-of-type(1) { text-align: left; overflow-wrap: anywhere }
-      td:nth-of-type(3) { white-space: nowrap }
+      td { padding-right: 2em; text-align: right;}
+      td:nth-of-type(1) { text-align: left; overflow-wrap: anywhere;}
+      td:nth-of-type(3) { white-space: nowrap;}
       th { text-align: left; }
       @media (prefers-color-scheme: dark) {
         body {
@@ -131,10 +131,10 @@ async function makeListingResponse(
           background-color: #1c1b22;
         }
         a {
-          color: #3391ff;
+          color: #6eabf2;
         }
         a:visited {
-          color: #C63B65;
+          color: #DF94FB;
         }
       }
     </style>

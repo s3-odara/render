@@ -157,7 +157,7 @@ ${htmlList.join("\n")}
       "access-control-allow-origin": env.ALLOWED_ORIGINS || "",
       "last-modified": lastModified === null ? "" : lastModified.toUTCString(),
       "content-type": "text/html",
-      "cache-control": env.DIRECTORY_CACHE_CONTROL || "no-store",
+      "cache-control": (env.DIRECTORY_CACHE_CONTROL || "no-store") + ", no-transform",
     },
   });
 }
@@ -408,7 +408,7 @@ export default {
           // if the 404 file has a custom cache control, we respect it
           "cache-control":
             file.httpMetadata?.cacheControl ??
-            (notFound ? "" : env.CACHE_CONTROL || ""),
+            (notFound ? "" : env.CACHE_CONTROL || "")) + ", no-transform",
           expires: file.httpMetadata?.cacheExpiry?.toUTCString() ?? "",
           "last-modified": notFound ? "" : file.uploaded.toUTCString(),
 

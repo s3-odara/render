@@ -408,7 +408,7 @@ export default {
           // if the 404 file has a custom cache control, we respect it
           "cache-control":
             file.httpMetadata?.cacheControl ??
-            (notFound ? "" : env.CACHE_CONTROL || "")) + ", no-transform",
+            (notFound ? "" : env.CACHE_CONTROL || "") + ", no-transform",
           expires: file.httpMetadata?.cacheExpiry?.toUTCString() ?? "",
           "last-modified": notFound ? "" : file.uploaded.toUTCString(),
 

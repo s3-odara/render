@@ -208,10 +208,31 @@ export default {
 
     let response: Response | undefined;
 
+    const acceptsBr = (() => {
+      const header = request.headers.get("accept-encoding");
+      if (!header) return false;
+      for (const part of header.split(",")) {
+        const [coding, ...params] = part.trim().split(";");
+        if (coding.trim().toLowerCase() !== "br") continue;
+        const qParam = params
+          .map((p) => p.trim())
+          .find((p) => p.startsWith("q="));
+        const q = qParam ? Number(qParam.slice(2)) : 1;
+        return !Number.isNaN(q) && q > 0;
+      }
+      return false;
+    })();
+    const cacheKey = acceptsBr
+      ? new Request(
+          request.url + (request.url.includes("?") ? "&" : "?") + "__br=1",
+          request
+        )
+      : request;
+
     const isCachingEnabled = env.CACHE_CONTROL !== "no-store";
     const cache = caches.default;
     if (isCachingEnabled) {
-      response = await cache.match(request);
+      response = await cache.match(cacheKey);
     }
 
     // Since we produce this result from the request, we don't need to strictly use an R2Range
@@ -223,6 +244,8 @@ export default {
       }
       const url = new URL(request.url);
       let path = (env.PATH_PREFIX || "") + decodeURIComponent(url.pathname);
+      let useBr = false;
+      let brPath: string | undefined;
 
       // directory logic
       if (path.endsWith("/")) {
@@ -236,7 +259,7 @@ export default {
 
           if (listResponse !== null) {
             if (listResponse.headers.get("cache-control") !== "no-store") {
-              ctx.waitUntil(cache.put(request, listResponse.clone()));
+              ctx.waitUntil(cache.put(cacheKey, listResponse.clone()));
             }
             return listResponse;
           }
@@ -248,12 +271,24 @@ export default {
       }
 
       let file: R2Object | R2ObjectBody | null | undefined;
+      const brEligible = /\.(?:htm|html|txt|text|asc|js|mjs|css|json|xml|svg|map|webmanifest)$/i.test(
+        path
+      );
+      if (acceptsBr && brEligible && path !== "" && !path.endsWith("/")) {
+        brPath = `__br/${path}`;
+        const brHead = await retryAsync(env, () => env.R2_BUCKET.head(brPath));
+        if (brHead) {
+          useBr = true;
+          path = brPath;
+          file = brHead;
+        }
+      }
 
       // Range handling
       if (request.method === "GET") {
         const rangeHeader = request.headers.get("range");
         if (rangeHeader) {
-          file = await retryAsync(env, () => env.R2_BUCKET.head(path));
+          file = file ?? (await retryAsync(env, () => env.R2_BUCKET.head(path)));
           if (file === null)
             return new Response("File Not Found", { status: 404 });
           const parsedRanges = parseRange(file.size, rangeHeader);
@@ -325,16 +360,16 @@ export default {
       if (ifNoneMatch || ifModifiedSince) {
         // if-none-match overrides if-modified-since completely
         if (ifNoneMatch) {
-          file = await retryAsync(env, () =>
-            env.R2_BUCKET.get(path, {
-              onlyIf: { etagDoesNotMatch: ifNoneMatch },
+        file = await retryAsync(env, () =>
+          env.R2_BUCKET.get(path, {
+            onlyIf: { etagDoesNotMatch: ifNoneMatch },
               range,
             })
           );
         } else if (ifModifiedSince) {
-          file = await retryAsync(env, () =>
-            env.R2_BUCKET.get(path, {
-              onlyIf: { uploadedAfter: new Date(ifModifiedSince) },
+        file = await retryAsync(env, () =>
+          env.R2_BUCKET.get(path, {
+            onlyIf: { uploadedAfter: new Date(ifModifiedSince) },
               range,
             })
           );
@@ -398,11 +433,15 @@ export default {
         file.body.pipeTo(writable);
         body = readable;
       }
+      const contentEncoding =
+        file.httpMetadata?.contentEncoding ?? (useBr ? "br" : "");
+
       response = new Response(body, {
         status: notFound ? 404 : range ? 206 : 200,
         headers: {
           "accept-ranges": "bytes",
           "access-control-allow-origin": env.ALLOWED_ORIGINS || "",
+          vary: "accept-encoding",
 
           etag: notFound ? "" : file.httpEtag,
           // if the 404 file has a custom cache control, we respect it
@@ -412,7 +451,7 @@ export default {
           expires: file.httpMetadata?.cacheExpiry?.toUTCString() ?? "",
           "last-modified": notFound ? "" : file.uploaded.toUTCString(),
 
-          "content-encoding": file.httpMetadata?.contentEncoding ?? "",
+          "content-encoding": contentEncoding,
           "content-type":
             file.httpMetadata?.contentType ?? "application/octet-stream",
           "content-language": file.httpMetadata?.contentLanguage ?? "",
@@ -421,11 +460,11 @@ export default {
             range && !notFound ? getRangeHeader(range, file.size) : "",
           "content-length": contentLength.toString(),
         },
-        encodeBody: file.httpMetadata?.contentEncoding ? "manual" : "automatic",
+        encodeBody: contentEncoding ? "manual" : "automatic",
       });
 
       if (request.method === "GET" && !range && isCachingEnabled && !notFound)
-        ctx.waitUntil(cache.put(request, response.clone()));
+        ctx.waitUntil(cache.put(cacheKey, response.clone()));
     } else {
       if (env.LOGGING) {
         console.warn("Cache HIT for", request.url);

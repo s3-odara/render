@@ -421,6 +421,7 @@ export default {
             range && !notFound ? getRangeHeader(range, file.size) : "",
           "content-length": contentLength.toString(),
         },
+        encodeBody: file.httpMetadata?.contentEncoding ? "manual" : "automatic",
       });
 
       if (request.method === "GET" && !range && isCachingEnabled && !notFound)

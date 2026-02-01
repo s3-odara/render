@@ -1,4 +1,4 @@
-name = "pgpworker"
+name = "wwwrender"
 main = "src/index.ts"
 compatibility_date = "2022-05-15"
 # Set this to false if you don't want to use the default *.workers.dev route.
@@ -32,7 +32,7 @@ NOTFOUND_FILE = ""
 
 # Enable to show a directory listing fallback on paths ending in /
 # If INDEX_FILE is also provided, it will be used instead if the file exists.
-DIRECTORY_LISTING = true
+DIRECTORY_LISTING = false
 
 # The number of items to show per page in directory listings.
 # Listings may also return less if the listing API call reaches a size limit.
@@ -56,6 +56,6 @@ enabled = false
 
 [[r2_buckets]]
 binding = "R2_BUCKET"
-bucket_name = "pgps3-odaranet"         # Set this to your R2 bucket name. Required
+bucket_name = "wwws3-odaranet"         # Set this to your R2 bucket name. Required
 #preview_bucket_name = "kot" # Set this to your preview R2 bucket name. Can be equal to bucket_name. Optional
 #jurisdiction = "eu"        # Set this to "eu" or "us". Optional if the bucket has no jurisdiction restrictions

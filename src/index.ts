@@ -1,5 +1,3 @@
-import parseRange from "range-parser";
-
 export interface Env {
   R2_BUCKET: R2Bucket;
   ALLOWED_ORIGINS?: string;
@@ -17,26 +15,8 @@ export interface Env {
 
 const units = ["B", "KB", "MB", "GB", "TB"];
 
-type ParsedRange = { offset: number; length: number } | { suffix: number };
-
-function rangeHasLength(
-  object: ParsedRange
-): object is { offset: number; length: number } {
-  return (<{ offset: number; length: number }>object).length !== undefined;
-}
-
 function hasBody(object: R2Object | R2ObjectBody): object is R2ObjectBody {
   return (<R2ObjectBody>object).body !== undefined;
-}
-
-function hasSuffix(range: ParsedRange): range is { suffix: number } {
-  return (<{ suffix: number }>range).suffix !== undefined;
-}
-
-function getRangeHeader(range: ParsedRange, fileSize: number): string {
-  return `bytes ${hasSuffix(range) ? fileSize - range.suffix : range.offset}-${
-    hasSuffix(range) ? fileSize - 1 : range.offset + range.length - 1
-  }/${fileSize}`;
 }
 
 // some ideas for this were taken from / inspired by
@@ -157,7 +137,10 @@ ${htmlList.join("\n")}
       "access-control-allow-origin": env.ALLOWED_ORIGINS || "",
       "last-modified": lastModified === null ? "" : lastModified.toUTCString(),
       "content-type": "text/html",
-      "cache-control": env.DIRECTORY_CACHE_CONTROL || "no-store",
+      "cache-control":
+        env.CACHE_CONTROL === "no-store"
+          ? "no-store"
+          : env.DIRECTORY_CACHE_CONTROL || "no-store",
     },
   });
 }
@@ -184,295 +167,180 @@ async function retryAsync<T>(env: Env, fn: () => Promise<T>): Promise<T> {
   throw new Error("unreachable");
 }
 
-export default {
-  async fetch(
-    request: Request,
-    env: Env,
-    ctx: ExecutionContext
-  ): Promise<Response> {
-    const allowedMethods = ["GET", "HEAD", "OPTIONS"];
-    if (allowedMethods.indexOf(request.method) === -1) {
-      return new Response("Method Not Allowed", {
-        status: 405,
-        headers: { allow: allowedMethods.join(", ") },
-      });
+async function serve(request: Request, env: Env): Promise<Response> {
+  const allowedMethods = ["GET", "HEAD", "OPTIONS"];
+  if (allowedMethods.indexOf(request.method) === -1) {
+    return new Response("Method Not Allowed", {
+      status: 405,
+      headers: { allow: allowedMethods.join(", ") },
+    });
+  }
+
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      headers: { allow: allowedMethods.join(", ") },
+    });
+  }
+
+  let triedIndex = false;
+
+  const url = new URL(request.url);
+  let path = (env.PATH_PREFIX || "") + decodeURIComponent(url.pathname);
+
+  // directory logic
+  if (path.endsWith("/")) {
+    // if theres an index file, try that. 404 logic down below has dir fallback.
+    if (env.INDEX_FILE && env.INDEX_FILE !== "") {
+      path += env.INDEX_FILE;
+      triedIndex = true;
+    } else if (env.DIRECTORY_LISTING) {
+      // return the dir listing
+      let listResponse = await makeListingResponse(path, env, request);
+
+      if (listResponse !== null) {
+        return listResponse;
+      }
+    }
+  }
+
+  if (path !== "/" && path.startsWith("/")) {
+    path = path.substring(1);
+  }
+
+  let file: R2Object | R2ObjectBody | null | undefined;
+
+  // Etag/If-(Not)-Match handling
+  // R2 requires that etag checks must not contain quotes, and the S3 spec only allows one etag
+  // This silently ignores invalid or weak (W/) headers
+  const getHeaderEtag = (header: string | null) =>
+    header?.trim().replace(/^['"]|['"]$/g, "");
+  const ifMatch = getHeaderEtag(request.headers.get("if-match"));
+  const ifNoneMatch = getHeaderEtag(request.headers.get("if-none-match"));
+
+  const ifModifiedSince = Date.parse(
+    request.headers.get("if-modified-since") || ""
+  );
+  const ifUnmodifiedSince = Date.parse(
+    request.headers.get("if-unmodified-since") || ""
+  );
+
+  if (ifMatch || ifUnmodifiedSince) {
+    file = await retryAsync(env, () =>
+      env.R2_BUCKET.get(path, {
+        onlyIf: {
+          etagMatches: ifMatch,
+          uploadedBefore: ifUnmodifiedSince
+            ? new Date(ifUnmodifiedSince)
+            : undefined,
+        },
+      })
+    );
+
+    if (file && !hasBody(file)) {
+      return new Response("Precondition Failed", { status: 412 });
+    }
+  }
+
+  if (ifNoneMatch || ifModifiedSince) {
+    // if-none-match overrides if-modified-since completely
+    if (ifNoneMatch) {
+      file = await retryAsync(env, () =>
+        env.R2_BUCKET.get(path, {
+          onlyIf: { etagDoesNotMatch: ifNoneMatch },
+        })
+      );
+    } else if (ifModifiedSince) {
+      file = await retryAsync(env, () =>
+        env.R2_BUCKET.get(path, {
+          onlyIf: { uploadedAfter: new Date(ifModifiedSince) },
+        })
+      );
+    }
+    if (file && !hasBody(file)) {
+      return new Response(null, { status: 304 });
+    }
+  }
+
+  file =
+    request.method === "HEAD"
+      ? await retryAsync(env, () => env.R2_BUCKET.head(path))
+      : file && hasBody(file)
+      ? file
+      : await retryAsync(env, () => env.R2_BUCKET.get(path));
+
+  let notFound: boolean = false;
+
+  if (file === null) {
+    if (env.INDEX_FILE && triedIndex) {
+      // remove the index file since it doesn't exist
+      path = path.substring(0, path.length - env.INDEX_FILE.length);
     }
 
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: { allow: allowedMethods.join(", ") },
-      });
+    if (env.DIRECTORY_LISTING && (path.endsWith("/") || path === "")) {
+      // return the dir listing
+      let listResponse = await makeListingResponse(path, env, request);
+
+      if (listResponse !== null) {
+        return listResponse;
+      }
     }
 
-    let triedIndex = false;
-
-    let response: Response | undefined;
-
-    const acceptsBr = (() => {
-      const header = request.headers.get("accept-encoding");
-      if (!header) return false;
-      for (const part of header.split(",")) {
-        const [coding, ...params] = part.trim().split(";");
-        if (coding.trim().toLowerCase() !== "br") continue;
-        const qParam = params
-          .map((p) => p.trim())
-          .find((p) => p.startsWith("q="));
-        const q = qParam ? Number(qParam.slice(2)) : 1;
-        return !Number.isNaN(q) && q > 0;
-      }
-      return false;
-    })();
-    const cacheKey = acceptsBr
-      ? new Request(
-          request.url + (request.url.includes("?") ? "&" : "?") + "__br=1",
-          request
-        )
-      : request;
-
-    const isCachingEnabled = env.CACHE_CONTROL !== "no-store";
-    const cache = caches.default;
-    if (isCachingEnabled) {
-      response = await cache.match(cacheKey);
-    }
-
-    // Since we produce this result from the request, we don't need to strictly use an R2Range
-    let range: ParsedRange | undefined;
-
-    if (!response || !(response.ok || response.status == 304)) {
-      if (env.LOGGING) {
-        console.warn("Cache MISS for", request.url);
-      }
-      const url = new URL(request.url);
-      let path = (env.PATH_PREFIX || "") + decodeURIComponent(url.pathname);
-      let useBr = false;
-      let brPath: string | undefined;
-
-      // directory logic
-      if (path.endsWith("/")) {
-        // if theres an index file, try that. 404 logic down below has dir fallback.
-        if (env.INDEX_FILE && env.INDEX_FILE !== "") {
-          path += env.INDEX_FILE;
-          triedIndex = true;
-        } else if (env.DIRECTORY_LISTING) {
-          // return the dir listing
-          let listResponse = await makeListingResponse(path, env, request);
-
-          if (listResponse !== null) {
-            if (listResponse.headers.get("cache-control") !== "no-store") {
-              ctx.waitUntil(cache.put(cacheKey, listResponse.clone()));
-            }
-            return listResponse;
-          }
-        }
-      }
-
-      if (path !== "/" && path.startsWith("/")) {
-        path = path.substring(1);
-      }
-
-      let file: R2Object | R2ObjectBody | null | undefined;
-      const brEligible = /\.(?:htm|html|txt|text|asc|js|mjs|css|json|xml|svg|map|webmanifest)$/i.test(
-        path
-      );
-      if (acceptsBr && brEligible && path !== "" && !path.endsWith("/")) {
-        brPath = `__br/${path}`;
-        const brHead = await retryAsync(env, () => env.R2_BUCKET.head(brPath));
-        if (brHead) {
-          useBr = true;
-          path = brPath;
-          file = brHead;
-        }
-      }
-
-      // Range handling
-      if (request.method === "GET") {
-        const rangeHeader = request.headers.get("range");
-        if (rangeHeader) {
-          file = file ?? (await retryAsync(env, () => env.R2_BUCKET.head(path)));
-          if (file === null)
-            return new Response("File Not Found", { status: 404 });
-          const parsedRanges = parseRange(file.size, rangeHeader);
-          // R2 only supports 1 range at the moment, reject if there is more than one
-          if (
-            parsedRanges !== -1 &&
-            parsedRanges !== -2 &&
-            parsedRanges.length === 1 &&
-            parsedRanges.type === "bytes"
-          ) {
-            let firstRange = parsedRanges[0];
-            range =
-              file.size === firstRange.end + 1
-                ? { suffix: file.size - firstRange.start }
-                : {
-                    offset: firstRange.start,
-                    length: firstRange.end - firstRange.start + 1,
-                  };
-          } else {
-            return new Response("Range Not Satisfiable", { status: 416 });
-          }
-        }
-      }
-
-      // Etag/If-(Not)-Match handling
-      // R2 requires that etag checks must not contain quotes, and the S3 spec only allows one etag
-      // This silently ignores invalid or weak (W/) headers
-      const getHeaderEtag = (header: string | null) =>
-        header?.trim().replace(/^['"]|['"]$/g, "");
-      const ifMatch = getHeaderEtag(request.headers.get("if-match"));
-      const ifNoneMatch = getHeaderEtag(request.headers.get("if-none-match"));
-
-      const ifModifiedSince = Date.parse(
-        request.headers.get("if-modified-since") || ""
-      );
-      const ifUnmodifiedSince = Date.parse(
-        request.headers.get("if-unmodified-since") || ""
-      );
-
-      const ifRange = request.headers.get("if-range");
-      if (range && ifRange && file) {
-        const maybeDate = Date.parse(ifRange);
-
-        if (isNaN(maybeDate) || new Date(maybeDate) > file.uploaded) {
-          // httpEtag already has quotes, no need to use getHeaderEtag
-          if (ifRange.startsWith("W/") || ifRange !== file.httpEtag)
-            range = undefined;
-        }
-      }
-
-      if (ifMatch || ifUnmodifiedSince) {
-        file = await retryAsync(env, () =>
-          env.R2_BUCKET.get(path, {
-            onlyIf: {
-              etagMatches: ifMatch,
-              uploadedBefore: ifUnmodifiedSince
-                ? new Date(ifUnmodifiedSince)
-                : undefined,
-            },
-            range,
-          })
-        );
-
-        if (file && !hasBody(file)) {
-          return new Response("Precondition Failed", { status: 412 });
-        }
-      }
-
-      if (ifNoneMatch || ifModifiedSince) {
-        // if-none-match overrides if-modified-since completely
-        if (ifNoneMatch) {
-        file = await retryAsync(env, () =>
-          env.R2_BUCKET.get(path, {
-            onlyIf: { etagDoesNotMatch: ifNoneMatch },
-              range,
-            })
-          );
-        } else if (ifModifiedSince) {
-        file = await retryAsync(env, () =>
-          env.R2_BUCKET.get(path, {
-            onlyIf: { uploadedAfter: new Date(ifModifiedSince) },
-              range,
-            })
-          );
-        }
-        if (file && !hasBody(file)) {
-          return new Response(null, { status: 304 });
-        }
-      }
-
+    if (env.NOTFOUND_FILE && env.NOTFOUND_FILE != "") {
+      notFound = true;
+      path = env.NOTFOUND_FILE;
       file =
         request.method === "HEAD"
           ? await retryAsync(env, () => env.R2_BUCKET.head(path))
-          : file && hasBody(file)
-          ? file
-          : await retryAsync(env, () => env.R2_BUCKET.get(path, { range }));
-
-      let notFound: boolean = false;
-
-      if (file === null) {
-        if (env.INDEX_FILE && triedIndex) {
-          // remove the index file since it doesn't exist
-          path = path.substring(0, path.length - env.INDEX_FILE.length);
-        }
-
-        if (env.DIRECTORY_LISTING && (path.endsWith("/") || path === "")) {
-          // return the dir listing
-          let listResponse = await makeListingResponse(path, env, request);
-
-          if (listResponse !== null) {
-            if (listResponse.headers.get("cache-control") !== "no-store") {
-              ctx.waitUntil(cache.put(request, listResponse.clone()));
-            }
-            return listResponse;
-          }
-        }
-
-        if (env.NOTFOUND_FILE && env.NOTFOUND_FILE != "") {
-          notFound = true;
-          path = env.NOTFOUND_FILE;
-          file =
-            request.method === "HEAD"
-              ? await retryAsync(env, () => env.R2_BUCKET.head(path))
-              : await retryAsync(env, () => env.R2_BUCKET.get(path));
-        }
-
-        // if it's still null, either 404 is disabled or that file wasn't found either
-        // this isn't an else because then there would have to be two of them
-        if (file == null) {
-          return new Response("File Not Found", { status: 404 });
-        }
-      }
-
-      // Content-Length handling
-      let body;
-      let contentLength = file.size;
-      if (hasBody(file) && file.size !== 0) {
-        if (range && !notFound) {
-          contentLength = rangeHasLength(range) ? range.length : range.suffix;
-        }
-        let { readable, writable } = new FixedLengthStream(contentLength);
-        file.body.pipeTo(writable);
-        body = readable;
-      }
-      const contentEncoding =
-        file.httpMetadata?.contentEncoding ?? (useBr ? "br" : "");
-
-      response = new Response(body, {
-        status: notFound ? 404 : range ? 206 : 200,
-        headers: {
-          "accept-ranges": "bytes",
-          "access-control-allow-origin": env.ALLOWED_ORIGINS || "",
-          vary: "accept-encoding",
-
-          etag: notFound ? "" : file.httpEtag,
-          // if the 404 file has a custom cache control, we respect it
-          "cache-control":
-            file.httpMetadata?.cacheControl ??
-            (notFound ? "" : env.CACHE_CONTROL || ""),
-          expires: file.httpMetadata?.cacheExpiry?.toUTCString() ?? "",
-          "last-modified": notFound ? "" : file.uploaded.toUTCString(),
-
-          "content-encoding": contentEncoding,
-          "content-type":
-            file.httpMetadata?.contentType ?? "application/octet-stream",
-          "content-language": file.httpMetadata?.contentLanguage ?? "",
-          "content-disposition": file.httpMetadata?.contentDisposition ?? "",
-          "content-range":
-            range && !notFound ? getRangeHeader(range, file.size) : "",
-          "content-length": contentLength.toString(),
-        },
-        encodeBody: contentEncoding ? "manual" : "automatic",
-      });
-
-      if (request.method === "GET" && !range && isCachingEnabled && !notFound)
-        ctx.waitUntil(cache.put(cacheKey, response.clone()));
-    } else {
-      if (env.LOGGING) {
-        console.warn("Cache HIT for", request.url);
-      }
+          : await retryAsync(env, () => env.R2_BUCKET.get(path));
     }
 
-    return response;
-  },
+    // if it's still null, either 404 is disabled or that file wasn't found either
+    // this isn't an else because then there would have to be two of them
+    if (file == null) {
+      return new Response("File Not Found", {
+        status: 404,
+        headers: { "cache-control": "no-store" },
+      });
+    }
+  }
+
+  // Content-Length handling
+  let body;
+  const contentLength = file.size;
+  if (hasBody(file) && file.size !== 0) {
+    let { readable, writable } = new FixedLengthStream(contentLength);
+    file.body.pipeTo(writable);
+    body = readable;
+  }
+  const contentEncoding = file.httpMetadata?.contentEncoding ?? "";
+
+  return new Response(body, {
+    status: notFound ? 404 : 200,
+    headers: {
+      "accept-ranges": "bytes",
+      "access-control-allow-origin": env.ALLOWED_ORIGINS || "",
+
+      etag: notFound ? "" : file.httpEtag,
+      "cache-control":
+        notFound || env.CACHE_CONTROL === "no-store"
+          ? "no-store"
+          : file.httpMetadata?.cacheControl ?? env.CACHE_CONTROL ?? "",
+      expires: file.httpMetadata?.cacheExpiry?.toUTCString() ?? "",
+      "last-modified": notFound ? "" : file.uploaded.toUTCString(),
+
+      "content-encoding": contentEncoding,
+      "content-type":
+        file.httpMetadata?.contentType ?? "application/octet-stream",
+      "content-language": file.httpMetadata?.contentLanguage ?? "",
+      "content-disposition": file.httpMetadata?.contentDisposition ?? "",
+      "content-length": contentLength.toString(),
+    },
+    encodeBody: contentEncoding ? "manual" : "automatic",
+  });
+}
+
+export default {
+  fetch: serve,
 };
 
 function niceBytes(x: number) {

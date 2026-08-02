@@ -16,8 +16,8 @@ If you see a bug or something missing, please open an issue or pull request!
 - Handles `HEAD`, `GET`, and `OPTIONS` requests
 - Forwards caching headers (`etag`, `cache-control`, `expires`, `last-modified`)
 - Forwards content headers (`content-type`, `content-encoding`, `content-language`, `content-disposition`)
-- Caches served files using the [Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/)
-- Ranged requests (`range`, `if-range`, returns `content-range`)
+- Uses [Workers Caching](https://developers.cloudflare.com/workers/cache/) to store cacheable full `200` responses
+- Workers Caching can serve `Range` requests as `206` responses from those cached full responses
 - Handles precondition headers (`if-modified-since`, `if-unmodified-since`, `if-match`, `if-none-match`)
 - Can serve an appended path if the requested url ends with / - Defaults to `index.html` in 0.5.0
 - Can serve custom 404 responses if a file is not found
@@ -39,16 +39,17 @@ You can do this from a fork, if using the [GitHub Actions method](#method-2-gith
 
 You may edit `CACHE_CONTROL` to the default [`cache-control` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) or remove it entirely to fall back to nothing. If you set `CACHE_CONTROL` to `"no-store"` then Cloudflare caching will not be used.
 
+[Workers Caching](https://developers.cloudflare.com/workers/cache/) is enabled by the `[cache]` section in `wrangler.toml`. Cache hits are served before the Worker runs. Only cacheable full `200` responses are stored; Cloudflare can serve `Range` requests as `206` responses from those full cached responses. The Worker itself intentionally does not fetch partial R2 objects.
+
 ### Deploying
 
-Note: Due to how custom domains for workers work, you MUST use a route to take advantage of caching. Cloudflare may fix this soon.
-Also note that \*.workers.dev domains do not cache responses. You MUST use a route to your own (sub)domain.
+Workers Caching can be used on workers.dev, a custom domain, or a route, so choose whichever deployment option fits your application. No route is required solely to enable caching.
 
 If you want to deploy render with multiple domains for one worker, check out [multi-render](https://github.com/Erisa/multi-render)! It uses render [as a package](#using-as-a-package) to serve multiple buckets to multiple domains with custom configurations.
 
 #### Method 1 (Local)
 ```sh
-pnpm wrangler publish # or `pnpm run deploy`
+pnpm wrangler deploy # or `pnpm run deploy`
 ```
 
 #### Method 2 (GitHub Actions)
@@ -57,7 +58,7 @@ pnpm wrangler publish # or `pnpm run deploy`
 ` template) and `CF_ACCOUNT_ID` in the repo settings
 3. Enable workflows in the Actions tab
 4. Update `wrangler.toml` as needed (this will trigger the workflow)
-5. (Optionally) set the worker route in the Cloudflare dashboard to use the Cache API
+5. (Optionally) configure a custom domain or route in the Cloudflare dashboard
 
 ## Using as a package
 

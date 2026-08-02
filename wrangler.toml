@@ -1,9 +1,13 @@
 name = "wwwrender"
 main = "src/index.ts"
-compatibility_date = "2022-05-15"
+compatibility_date = "2026-08-02"
 # Set this to false if you don't want to use the default *.workers.dev route.
-# Note that *.workers.dev routes don't support native worker-level caching: https://developers.cloudflare.com/workers/runtime-apis/cache/
 workers_dev = false
+
+# Enable Workers Caching in front of the Worker. Cache hits are served without
+# running the Worker. This works with workers.dev, custom domains, and routes.
+[cache]
+enabled = true
 
 [vars]
 # The `access-control-allow-origin` header: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin
@@ -11,9 +15,9 @@ workers_dev = false
 ALLOWED_ORIGINS = ""
 
 # The `cache-control` header: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control.
-# Optional, the `cache-control` header is omitted if unset, which would NOT disable caching: https://developers.cloudflare.com/workers/runtime-apis/cache/#headers
+# Optional, the `cache-control` header is omitted if unset, which does not disable Workers Caching.
 # For example, you can disable all cache by setting this to `no-store`.
-CACHE_CONTROL = "max-age=180, no-transform, stale-while-revalidate=86400"
+CACHE_CONTROL = "max-age=180, s-maxage=3600, stale-while-revalidate=86400"
 
 # The string to prepend to each file path. Optional, nothing is prepended to the path if unset.
 PATH_PREFIX = ""
@@ -43,7 +47,7 @@ ITEMS_PER_PAGE = 1000
 HIDE_HIDDEN_FILES = true
 
 # Set a cache header here, e.g. "max-age=86400", if you want to cache directory listings.
-DIRECTORY_CACHE_CONTROL = "max-age=180, no-transform, stale-while-revalidate=86400"
+DIRECTORY_CACHE_CONTROL = "max-age=180, s-maxage=3600, stale-while-revalidate=86400"
 
 # Set debugging log enabled
 LOGGING = false

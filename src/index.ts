@@ -80,9 +80,6 @@ async function makeListingResponse(
           `<td>${dateStr}</td><td>${niceBytes(file.size)}</td></tr>`
       );
 
-      if (lastModified == null || file.uploaded > lastModified) {
-        lastModified = file.uploaded;
-      }
     }
 
     if (listing.truncated) {
@@ -131,18 +128,23 @@ ${htmlList.join("\n")}
   `;
   }
 
+  const browserCacheControl =
+  env.CACHE_CONTROL === "no-store"
+    ? "no-store"
+    : env.DIRECTORY_CACHE_CONTROL || "no-store";
+
   return new Response(html === "" ? null : html, {
-    status: 200,
-    headers: {
-      "access-control-allow-origin": env.ALLOWED_ORIGINS || "",
-      "last-modified": lastModified === null ? "" : lastModified.toUTCString(),
-      "content-type": "text/html",
-      "cache-control":
-        env.CACHE_CONTROL === "no-store"
-          ? "no-store"
-          : env.DIRECTORY_CACHE_CONTROL || "no-store",
-    },
-  });
+  status: 200,
+  headers: {
+    "access-control-allow-origin": env.ALLOWED_ORIGINS || "",
+    "content-type": "text/html",
+    "cache-control": browserCacheControl,
+    "cloudflare-cdn-cache-control":
+      browserCacheControl === "no-store"
+        ? "no-store"
+        : "public, max-age=3600, stale-while-revalidate=86400",
+  },
+});
 }
 
 async function retryAsync<T>(env: Env, fn: () => Promise<T>): Promise<T> {
